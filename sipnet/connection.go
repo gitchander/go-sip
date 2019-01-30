@@ -2,12 +2,11 @@ package sipnet
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"sync"
 	"time"
-
-	"fmt"
 )
 
 // Conn represents a connection with a UA. It can be on UDP or TCP.

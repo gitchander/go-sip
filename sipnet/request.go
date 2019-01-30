@@ -1,11 +1,9 @@
 package sipnet
 
 import (
+	"io"
 	"strconv"
 )
-
-// SIPVersion is the version of SIP used by this library.
-const SIPVersion = "SIP/2.0"
 
 // SIP request methods.
 const (
@@ -20,40 +18,48 @@ const (
 
 // Request represents a SIP request (i.e. a message sent by a UAC to a UAS).
 type Request struct {
-	Method     string
-	Server     string
-	SIPVersion string
-	Header     Header
-	Body       []byte
+	Method string
+	Server string
+	Proto  string
+
+	Header Header
+
+	Body []byte
 }
 
 // NewRequest returns a new request.
 func NewRequest() *Request {
 	return &Request{
-		SIPVersion: SIPVersion,
-		Header:     make(Header),
+		Proto:  ProtoSIP,
+		Header: make(Header),
 	}
 }
 
-// WriteTo writes the request data to a Conn. It automatically adds a
-// a Content-Length to the header, calls Flush() on the Conn.
-func (r *Request) WriteTo(conn *Conn) error {
-	_, err := conn.Write([]byte(r.Method + " " + r.Server + " " + SIPVersion + "\r\n"))
+var _ io.WriterTo = &Request{}
+
+func (r *Request) WriteTo(w io.Writer) (n int64, err error) {
+	ni, err := w.Write([]byte(r.Method + " " + r.Server + " " + r.Proto + "\r\n"))
 	if err != nil {
-		return err
+		return int64(ni), err
 	}
 
 	r.Header.Set("Content-Length", strconv.Itoa(len(r.Body)))
 
-	_, err = r.Header.WriteTo(conn)
+	_, err = r.Header.WriteTo(w)
+	if err != nil {
+		return 0, err
+	}
+
+	ni, err = w.Write(r.Body)
+	return int64(ni), err
+}
+
+// WriteTo writes the request data to a Conn. It automatically adds a
+// a Content-Length to the header, calls Flush() on the Conn.
+func (r *Request) WriteToConn(conn *Conn) error {
+	_, err := r.WriteTo(conn)
 	if err != nil {
 		return err
 	}
-
-	_, err = conn.Write(r.Body)
-	if err != nil {
-		return err
-	}
-
 	return conn.Flush()
 }

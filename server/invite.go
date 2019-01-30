@@ -6,18 +6,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/1lann/go-sip/sipnet"
+	"github.com/gitchander/go-sip/sipnet"
 )
 
 var errGiveUp = errors.New("server: give up")
 var errUnknownResponse = errors.New("server: unknown response")
 
 // HandleInvite handles INVITE SIP requests and attempts to make a call.
-func HandleInvite(r *sipnet.Request, conn *sipnet.Conn) {
-	from, to, err := sipnet.ParseUserHeader(r.Header)
+func HandleInvite(request *sipnet.Request, conn *sipnet.Conn) {
+	from, to, err := sipnet.ParseUserHeader(request.Header)
 	if err != nil {
-		resp := sipnet.NewResponse()
-		resp.BadRequest(conn, r, "Failed to parse From or To header.")
+		resp := sipnet.NewResponse(request)
+		resp.BadRequest(conn, "Failed to parse From or To header.")
 		return
 	}
 
@@ -28,19 +28,19 @@ func HandleInvite(r *sipnet.Request, conn *sipnet.Conn) {
 	registeredUsersMutex.Unlock()
 
 	if !found || user.conn != conn {
-		resp := sipnet.NewResponse()
+		resp := sipnet.NewResponse(request)
 		resp.StatusCode = sipnet.StatusForbidden
 		resp.Header.Set("Reason-Phrase", "Not registered.")
-		resp.WriteTo(conn, r)
+		resp.WriteTo(conn)
 		return
 	}
 
 	recipient := to.URI.Username
 	recipientUser, found := registeredUsers[recipient]
 	if !found {
-		resp := sipnet.NewResponse()
+		resp := sipnet.NewResponse(request)
 		resp.StatusCode = sipnet.StatusNotFound
-		resp.WriteTo(conn, r)
+		resp.WriteTo(conn)
 		return
 	}
 
@@ -51,7 +51,7 @@ func HandleInvite(r *sipnet.Request, conn *sipnet.Conn) {
 
 	fmt.Println("calling " + recipientUser.username)
 
-	initiateCall(r, conn, recipientUser.conn)
+	initiateCall(request, conn, recipientUser.conn)
 }
 
 func initiateCall(initialRequest *sipnet.Request,
@@ -80,12 +80,14 @@ func initiateCall(initialRequest *sipnet.Request,
 				fmt.Println(req)
 				lastRequest = req
 				req.WriteTo(to)
+
 			case *sipnet.Response:
 				resp := read.(*sipnet.Response)
 				fmt.Println("from --> to response, forwarding")
 				fmt.Println(resp)
+				resp.Request = lastRequest
+				resp.WriteTo(to)
 
-				resp.WriteTo(to, lastRequest)
 			case error:
 				err := read.(error)
 				fmt.Println("TODO: from error:", err)
@@ -105,7 +107,7 @@ func initiateCall(initialRequest *sipnet.Request,
 
 				if req.Method == sipnet.MethodOptions {
 					fmt.Println("responding with options")
-					resp := sipnet.NewResponse()
+					resp := sipnet.NewResponse(req)
 					resp.StatusCode = sipnet.StatusOK
 					resp.Header.Set("Allow", "INVITE, ACK, CANCEL, OPTIONS, BYE")
 					resp.Header.Set("Accept", "application/sdp")
@@ -113,7 +115,7 @@ func initiateCall(initialRequest *sipnet.Request,
 					resp.Header.Set("Accept-Language", "en")
 					resp.Header.Set("Content-Type", "application/sdp")
 					resp.Body = initialRequest.Body
-					resp.WriteTo(from, req)
+					resp.WriteTo(from)
 					break
 				}
 
@@ -122,6 +124,7 @@ func initiateCall(initialRequest *sipnet.Request,
 				lastRequest = req
 
 				req.WriteTo(from)
+
 			case *sipnet.Response:
 				resp := read.(*sipnet.Response)
 				if resp.StatusCode == sipnet.StatusTrying {
@@ -132,7 +135,9 @@ func initiateCall(initialRequest *sipnet.Request,
 				fmt.Println("to --> from response, forwarding")
 				fmt.Println(resp)
 
-				resp.WriteTo(from, lastRequest)
+				resp.Request = lastRequest
+				resp.WriteTo(from)
+
 			case error:
 				err := read.(error)
 				fmt.Println("TODO: from error:", err)
@@ -144,10 +149,10 @@ func initiateCall(initialRequest *sipnet.Request,
 	wg.Wait()
 }
 
-func trying(r *sipnet.Request, conn *sipnet.Conn) {
-	resp := sipnet.NewResponse()
+func trying(request *sipnet.Request, conn *sipnet.Conn) {
+	resp := sipnet.NewResponse(request)
 	resp.StatusCode = sipnet.StatusTrying
-	resp.WriteTo(conn, r)
+	resp.WriteTo(conn)
 }
 
 func waitResponse(conn *sipnet.Conn) (*sipnet.Response, error) {
@@ -173,8 +178,7 @@ func makeUnreliableRequest(r *sipnet.Request, fromConn *sipnet.Conn,
 				if receivedResponse {
 					return
 				}
-
-				err := r.WriteTo(toConn)
+				_, err := r.WriteTo(toConn)
 				if err != nil {
 					fmt.Println("write error:", err)
 					responseChannel <- err
@@ -196,8 +200,7 @@ func makeUnreliableRequest(r *sipnet.Request, fromConn *sipnet.Conn,
 			return resp.(*sipnet.Response)
 		case *sipnet.Request:
 			req := resp.(*sipnet.Request)
-
-			resp := sipnet.NewResponse()
+			resp := sipnet.NewResponse(req)
 			resp.StatusCode = sipnet.StatusOK
 			resp.Header.Set("Allow", "INVITE, ACK, CANCEL, OPTIONS, BYE")
 			resp.Header.Set("Accept", "application/sdp")
@@ -205,7 +208,7 @@ func makeUnreliableRequest(r *sipnet.Request, fromConn *sipnet.Conn,
 			resp.Header.Set("Accept-Language", "en")
 			resp.Header.Set("Content-Type", "application/sdp")
 			resp.Body = r.Body
-			resp.WriteTo(fromConn, req)
+			resp.WriteTo(fromConn)
 
 			break
 		case error:

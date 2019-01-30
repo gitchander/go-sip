@@ -32,7 +32,7 @@ func ReadRequest(rd io.Reader) (*Request, error) {
 	r := NewRequest()
 	r.Method = args[0]
 	r.Server = args[1]
-	r.SIPVersion = args[2][:len(args[2])-2]
+	r.Proto = args[2][:len(args[2])-2]
 
 	err = parseHeader(buf, r.Header)
 	if err != nil {
@@ -72,8 +72,8 @@ func ReadResponse(rd io.Reader) (*Response, error) {
 		return nil, ErrBadMessage
 	}
 
-	r := NewResponse()
-	r.SIPVersion = args[0]
+	r := NewResponse(nil)
+	r.Proto = args[0]
 	r.StatusCode, err = strconv.Atoi(args[1])
 	if err != nil {
 		return nil, err
