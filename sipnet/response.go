@@ -1,6 +1,7 @@
 package sipnet
 
 import (
+	"fmt"
 	"io"
 	"strconv"
 )
@@ -31,13 +32,19 @@ var _ io.WriterTo = &Response{}
 // a Content-Length, CSeq, Call-ID and Via header. It also sets the Status message
 // appropriately and automatically calls Flush() on the Conn.
 func (r *Response) WriteTo(w io.Writer) (n int64, err error) {
-	ni, err := w.Write([]byte(r.Proto + " " +
-		strconv.Itoa(r.StatusCode) + " " +
-		StatusText(r.StatusCode) +
-		"\r\n"))
+
+	ni, err := fmt.Fprintf(w, "%s %d %s\r\n", r.Proto, r.StatusCode, StatusText(r.StatusCode))
 	if err != nil {
 		return int64(ni), err
 	}
+
+	// ni, err := w.Write([]byte(r.Proto + " " +
+	// 	strconv.Itoa(r.StatusCode) + " " +
+	// 	StatusText(r.StatusCode) +
+	// 	"\r\n"))
+	// if err != nil {
+	// 	return int64(ni), err
+	// }
 
 	r.Header.Set("Content-Length", strconv.Itoa(len(r.Body)))
 
