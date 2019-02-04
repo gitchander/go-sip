@@ -2,35 +2,38 @@ package transport
 
 import (
 	"net"
+	"sync"
+	"time"
 )
 
-const maxBufferSize = 16000
+const maxBufferSize = 4096
 
 type TransportUDP struct {
-	udpConn     *net.UDPConn
-	readPackets chan *udpPacket
-	isOpen      *SyncBool
+	udpConn *net.UDPConn
+	isOpen  *SyncBool
+
+	cm *connectionsManagerUDP
 }
 
 func OpenTransportUDP(address string) (*TransportUDP, error) {
 
-	udpAddr, err := net.ResolveUDPAddr("udp", address)
+	laddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, err
 	}
 
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
 	}
 
 	t := &TransportUDP{
-		udpConn:     udpConn,
-		readPackets: make(chan *udpPacket, 20),
-		isOpen:      NewSyncBool(true),
+		udpConn: udpConn,
+		isOpen:  NewSyncBool(true),
+		cm:      newConnectionsManagerUDP(),
 	}
 
-	go readDataPacket(t.isOpen, t.udpConn, t.readPackets)
+	go readDataPacket(t.isOpen, t.udpConn, t.cm)
 
 	return t, nil
 }
@@ -40,12 +43,7 @@ func (t *TransportUDP) Close() error {
 	return nil
 }
 
-func (t *TransportUDP) WritePacket(p *udpPacket) error {
-	_, err := t.udpConn.WriteToUDP(p.data, p.addr)
-	return err
-}
-
-func readDataPacket(isOpen *SyncBool, udpConn *net.UDPConn, packets chan<- *udpPacket) {
+func readDataPacket(isOpen *SyncBool, udpConn *net.UDPConn, cm *connectionsManagerUDP) {
 	defer udpConn.Close()
 
 	buf := make([]byte, maxBufferSize)
@@ -58,19 +56,97 @@ func readDataPacket(isOpen *SyncBool, udpConn *net.UDPConn, packets chan<- *udpP
 			break
 		}
 
-		packet := &udpPacket{
-			addr: addr,
-			data: cloneBytes(buf[:n]),
-		}
-
-		packets <- packet
+		packet := cloneBytes(buf[:n])
+		cm.AddPacket(addr, packet)
 	}
 }
 
-type udpPacket struct {
-	addr *net.UDPAddr
-	data []byte
+type udpConn struct {
+	addr        *net.UDPAddr
+	readPackets chan []byte
+	lastTime    time.Time
 }
 
-// type udpConn struct {
-// }
+func newUdpConn(addr *net.UDPAddr) *udpConn {
+	return &udpConn{
+		addr:        addr,
+		readPackets: make(chan []byte),
+		lastTime:    time.Now(),
+	}
+}
+
+func (c *udpConn) receivePacket(packet []byte) {
+	c.lastTime = time.Now()
+	c.readPackets <- packet
+}
+
+//----------------------------------------------
+// !!!
+
+func (c *udpConn) ReadPacket() (packet []byte) {
+	packet = <-c.readPackets
+	return packet
+}
+
+func (c *udpConn) WritePacket(udpConn *net.UDPConn, packet []byte) error {
+	_, err := udpConn.WriteToUDP(packet, c.addr)
+	return err
+}
+
+// !!!
+//----------------------------------------------
+
+type connectionsManagerUDP struct {
+	mutex       sync.Mutex
+	connections map[string]*udpConn
+}
+
+func newConnectionsManagerUDP() *connectionsManagerUDP {
+	return &connectionsManagerUDP{
+		connections: make(map[string]*udpConn),
+	}
+}
+
+func (cm *connectionsManagerUDP) getConn(address string) *udpConn {
+	cm.mutex.Lock()
+	conn := cm.connections[address]
+	cm.mutex.Unlock()
+	return conn
+}
+
+func (cm *connectionsManagerUDP) AddPacket(addr *net.UDPAddr, packet []byte) {
+	cm.mutex.Lock()
+
+	key := addr.String()
+	c, ok := cm.connections[key]
+	if !ok {
+		c = newUdpConn(addr)
+		cm.connections[key] = c
+	}
+	c.receivePacket(packet)
+
+	cm.mutex.Unlock()
+}
+
+func (cm *connectionsManagerUDP) deleteOlderThan(dur time.Duration) {
+	cm.mutex.Lock()
+	now := time.Now()
+	var keys []string
+	for key, conn := range cm.connections {
+		if now.Sub(conn.lastTime) > dur {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range keys {
+		delete(cm.connections, key)
+	}
+	cm.mutex.Unlock()
+}
+
+func deleteOldConnections(cm *connectionsManagerUDP) {
+	dur := 10 * time.Minute
+	for {
+		time.Sleep(5 * time.Minute)
+		cm.deleteOlderThan(dur)
+	}
+}
