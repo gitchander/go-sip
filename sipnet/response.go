@@ -48,25 +48,25 @@ func (r *Response) WriteTo(w io.Writer) (n int64, err error) {
 
 	r.Header.Set("Content-Length", strconv.Itoa(len(r.Body)))
 
-	if r.Request != nil {
+	//	if r.Request != nil {
 
-		// Via
-		{
-			requestVia, err := ParseVia(r.Request.Header.Get("Via"))
-			if err != nil {
-				return 0, err
-			}
+	//		// Via
+	//		{
+	//			requestVia, err := ParseVia(r.Request.Header.Get("Via"))
+	//			if err != nil {
+	//				return 0, err
+	//			}
 
-			// ipPort := strings.Split(conn.Addr().String(), ":")
-			// requestVia.Arguments.Set("received", ipPort[0])
-			// requestVia.Arguments.Set("rport", ipPort[1])
+	//			// ipPort := strings.Split(conn.Addr().String(), ":")
+	//			// requestVia.Arguments.Set("received", ipPort[0])
+	//			// requestVia.Arguments.Set("rport", ipPort[1])
 
-			r.Header.Set("Via", requestVia.String())
-		}
+	//			r.Header.Set("Via", requestVia.String())
+	//		}
 
-		r.Header.Set("CSeq", r.Request.Header.Get("CSeq"))
-		r.Header.Set("Call-ID", r.Request.Header.Get("Call-ID"))
-	}
+	//		r.Header.Set("CSeq", r.Request.Header.Get("CSeq"))
+	//		r.Header.Set("Call-ID", r.Request.Header.Get("Call-ID"))
+	//	}
 
 	n, err = r.Header.WriteTo(w)
 	if err != nil {

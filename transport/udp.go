@@ -1,12 +1,24 @@
 package transport
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"time"
 )
 
 const maxBufferSize = 4096
+
+type Conn interface {
+	ReadPacket() ([]byte, error)
+	WritePacket([]byte) (n int, err error)
+}
+
+type ConnectHandler interface {
+	Handle(Conn)
+
+	//isHandler()
+}
 
 type TransportUDP struct {
 	udpConn *net.UDPConn
@@ -15,7 +27,7 @@ type TransportUDP struct {
 	cm *connectionsManagerUDP
 }
 
-func OpenTransportUDP(address string) (*TransportUDP, error) {
+func OpenTransportUDP(address string, handler ConnectHandler) (*TransportUDP, error) {
 
 	laddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
@@ -30,10 +42,13 @@ func OpenTransportUDP(address string) (*TransportUDP, error) {
 	t := &TransportUDP{
 		udpConn: udpConn,
 		isOpen:  NewSyncBool(true),
-		cm:      newConnectionsManagerUDP(),
+		cm:      newConnectionsManagerUDP(udpConn, handler),
 	}
 
-	go readDataPacket(t.isOpen, t.udpConn, t.cm)
+	go deleteOldConnections(t.cm)
+
+	// work
+	loopReadPacket(t.isOpen, t.udpConn, t.cm)
 
 	return t, nil
 }
@@ -43,7 +58,7 @@ func (t *TransportUDP) Close() error {
 	return nil
 }
 
-func readDataPacket(isOpen *SyncBool, udpConn *net.UDPConn, cm *connectionsManagerUDP) {
+func loopReadPacket(isOpen *SyncBool, udpConn *net.UDPConn, cm *connectionsManagerUDP) {
 	defer udpConn.Close()
 
 	buf := make([]byte, maxBufferSize)
@@ -57,22 +72,49 @@ func readDataPacket(isOpen *SyncBool, udpConn *net.UDPConn, cm *connectionsManag
 		}
 
 		packet := cloneBytes(buf[:n])
+
 		cm.AddPacket(addr, packet)
 	}
 }
 
+type packetUDP struct {
+	addr *net.UDPAddr
+	data []byte
+	size int
+}
+
+func loopWritePacket(udpConn *net.UDPConn, packets <-chan *packetUDP) {
+	for {
+		p, ok := <-packets
+		if !ok {
+			break
+		}
+
+		_, err := udpConn.WriteToUDP(p.data[:p.size], p.addr)
+		checkError(err)
+
+	}
+}
+
 type udpConn struct {
+	conn        *net.UDPConn
 	addr        *net.UDPAddr
 	readPackets chan []byte
 	lastTime    time.Time
 }
 
-func newUdpConn(addr *net.UDPAddr) *udpConn {
+func newUdpConn(conn *net.UDPConn, addr *net.UDPAddr) *udpConn {
 	return &udpConn{
+		conn:        conn,
 		addr:        addr,
 		readPackets: make(chan []byte),
 		lastTime:    time.Now(),
 	}
+}
+
+func (c *udpConn) Close() error {
+	fmt.Println("close conn:", c.addr)
+	return nil
 }
 
 func (c *udpConn) receivePacket(packet []byte) {
@@ -83,14 +125,16 @@ func (c *udpConn) receivePacket(packet []byte) {
 //----------------------------------------------
 // !!!
 
-func (c *udpConn) ReadPacket() (packet []byte) {
-	packet = <-c.readPackets
-	return packet
+func (c *udpConn) ReadPacket() ([]byte, error) {
+	packet, ok := <-c.readPackets
+	if ok {
+		return packet, nil
+	}
+	return nil, fmt.Errorf("close connection (%s)", c.addr)
 }
 
-func (c *udpConn) WritePacket(udpConn *net.UDPConn, packet []byte) error {
-	_, err := udpConn.WriteToUDP(packet, c.addr)
-	return err
+func (c *udpConn) WritePacket(packet []byte) (n int, err error) {
+	return c.conn.WriteToUDP(packet, c.addr)
 }
 
 // !!!
@@ -99,20 +143,26 @@ func (c *udpConn) WritePacket(udpConn *net.UDPConn, packet []byte) error {
 type connectionsManagerUDP struct {
 	mutex       sync.Mutex
 	connections map[string]*udpConn
+
+	conn    *net.UDPConn
+	handler ConnectHandler
 }
 
-func newConnectionsManagerUDP() *connectionsManagerUDP {
+func newConnectionsManagerUDP(conn *net.UDPConn, handler ConnectHandler) *connectionsManagerUDP {
 	return &connectionsManagerUDP{
 		connections: make(map[string]*udpConn),
+
+		conn:    conn,
+		handler: handler,
 	}
 }
 
-func (cm *connectionsManagerUDP) getConn(address string) *udpConn {
-	cm.mutex.Lock()
-	conn := cm.connections[address]
-	cm.mutex.Unlock()
-	return conn
-}
+//func (cm *connectionsManagerUDP) getConn_(address string) *udpConn {
+//	cm.mutex.Lock()
+//	conn := cm.connections[address]
+//	cm.mutex.Unlock()
+//	return conn
+//}
 
 func (cm *connectionsManagerUDP) AddPacket(addr *net.UDPAddr, packet []byte) {
 	cm.mutex.Lock()
@@ -120,7 +170,8 @@ func (cm *connectionsManagerUDP) AddPacket(addr *net.UDPAddr, packet []byte) {
 	key := addr.String()
 	c, ok := cm.connections[key]
 	if !ok {
-		c = newUdpConn(addr)
+		c = newUdpConn(cm.conn, addr)
+		go cm.handler.Handle(c)
 		cm.connections[key] = c
 	}
 	c.receivePacket(packet)
@@ -138,7 +189,11 @@ func (cm *connectionsManagerUDP) deleteOlderThan(dur time.Duration) {
 		}
 	}
 	for _, key := range keys {
-		delete(cm.connections, key)
+		conn, ok := cm.connections[key]
+		if ok {
+			delete(cm.connections, key)
+			conn.Close()
+		}
 	}
 	cm.mutex.Unlock()
 }

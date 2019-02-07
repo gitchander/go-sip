@@ -42,6 +42,10 @@ func (h Header) WriteTo(w io.Writer) (int64, error) {
 	return total, err
 }
 
-func normalizeKey(key string) string {
+func normalizeKey_(key string) string {
 	return strings.Title(strings.ToLower(key))
+}
+
+func normalizeKey(key string) string {
+	return key
 }
